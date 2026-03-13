@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BLE + GNSS Footfall Dashboard</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1020; --panel: #131b34; --panel2: #182242; --text: #eef2ff;
+      --muted: #a9b3d1; --good: #33d17a; --warn: #f6c344; --bad: #ff6b6b;
+      --border: rgba(255,255,255,.08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: linear-gradient(180deg,#0b1020,#09101a); color: var(--text); font-family: Inter,system-ui,Arial,sans-serif; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    .top { display:flex; gap:16px; align-items:center; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; }
+    .title h1 { margin:0; font-size:28px; }
+    .title p { margin:6px 0 0; color:var(--muted); }
+    .status { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .pill { background:var(--panel); border:1px solid var(--border); padding:10px 14px; border-radius:999px; color:var(--muted); }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:999px; margin-right:8px; background:var(--warn); }
+    .grid { display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-bottom:20px; }
+    .card,.panel { background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--border); border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.24); }
+    .card { padding:16px; min-height:110px; }
+    .panel { padding:16px; }
+    .card h3 { margin:0 0 10px; font-size:14px; color:var(--muted); font-weight:600; }
+    .metric { font-size:30px; font-weight:800; margin:0; }
+    .sub,.small { margin-top:8px; color:var(--muted); font-size:13px; }
+    .panel h2 { margin:0 0 14px; font-size:18px; }
+    .two { display:grid; grid-template-columns:1.2fr 1fr; gap:16px; margin-bottom:16px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+    @media (max-width:1100px){ .grid{grid-template-columns:repeat(3,1fr)} .two{grid-template-columns:1fr} }
+    @media (max-width:680px){ .grid{grid-template-columns:repeat(2,1fr)} .wrap{padding:14px} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>BLE + GNSS Footfall Dashboard</h1>
+        <p>Live pilot dashboard for Railway deployment</p>
+      </div>
+      <div class="status">
+        <div class="pill"><span class="dot" id="liveDot"></span><span id="liveText">Connecting…</span></div>
+        <div class="pill">Last update: <span id="lastUpdate">—</span></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><h3>Total Unique Devices</h3><p class="metric" id="totalUnique">0</p><div class="sub">Distinct MAC hashes seen</div></div>
+      <div class="card"><h3>Active Devices</h3><p class="metric" id="activeDevices">0</p><div class="sub">Seen inside active window</div></div>
+      <div class="card"><h3>Presence Count</h3><p class="metric" id="presenceCount">0</p><div class="sub">Last 24 hours</div></div>
+      <div class="card"><h3>Exposure Exit Count</h3><p class="metric" id="exposureExitCount">0</p><div class="sub">Last 24 hours</div></div>
+      <div class="card"><h3>Qualified Exposure</h3><p class="metric" id="exposureCount">0</p><div class="sub">Last 24 hours</div></div>
+      <div class="card"><h3>Average RSSI</h3><p class="metric" id="avgRssi">0</p><div class="sub">Average of active devices</div></div>
+    </div>
+
+    <div class="two">
+      <div class="panel">
+        <h2>Devices</h2>
+        <table>
+          <thead><tr><th>Device ID</th><th>FW</th><th>GPS</th><th>Queue</th><th>Upload Failures</th><th>Last Seen</th></tr></thead>
+          <tbody id="devicesBody"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Geofence</h2>
+        <table>
+          <tbody>
+            <tr><th>Latitude</th><td id="geoLat">—</td></tr>
+            <tr><th>Longitude</th><td id="geoLon">—</td></tr>
+            <tr><th>Radius</th><td id="geoRadius">—</td></tr>
+            <tr><th>Average Dwell</th><td id="avgDwell">—</td></tr>
+          </tbody>
+        </table>
+        <div class="small">Dashboard updates from REST polling and Socket.IO live events.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Recent Events</h2>
+      <table>
+        <thead><tr><th>Time</th><th>Event Type</th><th>Device</th><th>Signal</th><th>RSSI</th><th>Dwell</th><th>GPS</th><th>MAC Hash</th></tr></thead>
+        <tbody id="eventsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const fmtTs = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "—";
+    const short = (v, n = 18) => !v ? "—" : (String(v).length > n ? String(v).slice(0, n) + "…" : String(v));
+
+    function setLive(ok) {
+      document.getElementById("liveText").textContent = ok ? "Live" : "Disconnected";
+      document.getElementById("liveDot").style.background = ok ? "var(--good)" : "var(--bad)";
+    }
+
+    function stampUpdate() {
+      document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString();
+    }
+
+    async function loadStats() {
+      const res = await fetch("/api/stats");
+      const s = await res.json();
+      document.getElementById("totalUnique").textContent = s.total_unique ?? 0;
+      document.getElementById("activeDevices").textContent = s.active_devices ?? 0;
+      document.getElementById("presenceCount").textContent = s.presence_count ?? 0;
+      document.getElementById("exposureExitCount").textContent = s.exposure_exit_count ?? 0;
+      document.getElementById("exposureCount").textContent = s.exposure_count ?? 0;
+      document.getElementById("avgRssi").textContent = Number(s.avg_rssi ?? 0).toFixed(1);
+      document.getElementById("avgDwell").textContent = Number(s.avg_dwell ?? 0).toFixed(1) + " sec";
+      document.getElementById("geoLat").textContent = s.geofence?.lat ?? "—";
+      document.getElementById("geoLon").textContent = s.geofence?.lon ?? "—";
+      document.getElementById("geoRadius").textContent = (s.geofence?.radius_m ?? "—") + " m";
+    }
+
+    async function loadDevices() {
+      const res = await fetch("/api/devices?limit=20");
+      const rows = await res.json();
+      const body = document.getElementById("devicesBody");
+      body.innerHTML = rows.map(r => `
+        <tr>
+          <td class="mono">${r.device_id || "—"}</td>
+          <td>${r.fw_version || "—"}</td>
+          <td>${r.gps_fix ? '<span class="good">Fix</span>' : '<span class="warn">No Fix</span>'}</td>
+          <td>${r.queue_depth ?? "—"}</td>
+          <td>${r.upload_failures ?? "—"}</td>
+          <td>${fmtTs(r.last_heartbeat_ts || r.last_seen)}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadEvents() {
+      const res = await fetch("/api/events?limit=20");
+      const rows = await res.json();
+      const body = document.getElementById("eventsBody");
+      body.innerHTML = rows.map(r => `
+        <tr>
+          <td>${fmtTs(r.timestamp || r.received_ts)}</td>
+          <td>${r.event_type || "—"}</td>
+          <td class="mono">${r.device_id || "—"}</td>
+          <td>${r.signal_source || "—"}</td>
+          <td>${r.rssi ?? "—"}</td>
+          <td>${r.dwell_time_sec ?? 0}</td>
+          <td>${r.gps_fix ? '<span class="good">Yes</span>' : '<span class="warn">No</span>'}</td>
+          <td class="mono">${short(r.mac_hash)}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function refreshAll() {
+      await Promise.all([loadStats(), loadDevices(), loadEvents()]);
+      stampUpdate();
+    }
+
+    const socket = io();
+    socket.on("connect", () => setLive(true));
+    socket.on("disconnect", () => setLive(false));
+    socket.on("heartbeat", refreshAll);
+    socket.on("ingest", refreshAll);
+
+    refreshAll();
+    setInterval(refreshAll, 10000);
+  </script>
+</body>
+</html>
