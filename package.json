@@ -1,0 +1,17 @@
+{
+  "name": "pilot-backend-v9",
+  "version": "9.0.0",
+  "description": "BLE+GNSS Footfall Pilot Backend — 7SEMI ESP32-S3 EC200U",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

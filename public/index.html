@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Footfall Pilot v9 — Live Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#070b0f;--bg2:#0c1117;--bg3:#101720;
+  --border:#1a2330;--border2:#263040;
+  --text:#cdd8e3;--muted:#4a5f72;--muted2:#607888;
+  --accent:#00d4ff;--accent2:#0099cc;
+  --green:#00e676;--green2:#00a854;
+  --yellow:#ffd740;--orange:#ff6e40;--red:#ff3d57;--purple:#bb86fc;
+  --font-mono:'JetBrains Mono',monospace;
+  --font-ui:'Syne',sans-serif;
+}
+html,body{background:var(--bg);color:var(--text);font-family:var(--font-ui);font-size:14px;min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.03) 2px,rgba(0,0,0,.03) 4px);pointer-events:none;z-index:999}
+
+/* ── HEADER ── */
+header{display:flex;align-items:center;gap:12px;padding:0 24px;height:58px;background:var(--bg2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;box-shadow:0 0 20px rgba(0,212,255,.2)}
+.logo-title{font-size:15px;font-weight:800;color:#fff;letter-spacing:-.2px}
+.logo-sub{font-size:10px;color:var(--muted2);font-family:var(--font-mono);letter-spacing:.5px}
+.header-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.conn-pill{display:flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:11px;font-weight:700;font-family:var(--font-mono);border:1px solid transparent;transition:all .3s}
+.dot{width:6px;height:6px;border-radius:50%}
+.conn-live{background:rgba(0,230,118,.08);border-color:var(--green2);color:var(--green)}
+.conn-live .dot{background:var(--green);animation:pulse 1.5s infinite}
+.conn-wait{background:rgba(255,215,64,.08);border-color:#9a7a00;color:var(--yellow)}
+.conn-wait .dot{background:var(--yellow)}
+.conn-dead{background:rgba(255,61,87,.08);border-color:#991f2e;color:var(--red)}
+.conn-dead .dot{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.6)}}
+#last-update{font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+
+/* ── MAIN ── */
+main{padding:20px 24px;max-width:1640px;margin:0 auto}
+
+/* ── STATUS BAR ── */
+.status-bar{display:flex;gap:20px;flex-wrap:wrap;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:10px 18px;margin-bottom:18px}
+.si{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px;color:var(--muted2)}
+.si .val{color:var(--text);font-weight:600}
+.sdot{width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green)}
+.sdot.off{background:var(--red)}
+
+/* ── KPI GRID ── */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+@media(max-width:900px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px 18px;position:relative;overflow:hidden;transition:border-color .2s}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--kc,var(--accent));opacity:.8}
+.kpi:hover{border-color:var(--border2)}
+.kpi-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted2);font-family:var(--font-mono);margin-bottom:7px}
+.kpi-val{font-size:34px;font-weight:800;line-height:1;color:var(--kc,var(--accent));font-family:var(--font-mono);letter-spacing:-1px;transition:all .4s}
+.kpi-val.bump{animation:bump .4s ease}
+@keyframes bump{0%{transform:scale(1.18)}100%{transform:scale(1)}}
+.kpi-sub{font-size:10px;color:var(--muted);margin-top:4px}
+.kpi-icon{position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:28px;opacity:.06}
+
+/* ── GRID LAYOUTS ── */
+.row2{display:grid;grid-template-columns:1fr 1fr 300px;gap:12px;margin-bottom:18px}
+@media(max-width:1200px){.row2{grid-template-columns:1fr 1fr}.row2 .geo-card{grid-column:1/-1}}
+.row3{display:grid;grid-template-columns:340px 1fr;gap:12px;margin-bottom:18px}
+@media(max-width:1100px){.row3{grid-template-columns:1fr}}
+
+/* ── CARDS ── */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px 18px;overflow:hidden}
+.card-title{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted2);font-family:var(--font-mono);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card-title::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── CHART ── */
+.chart-wrap{display:flex;align-items:flex-end;gap:3px;height:80px;padding-bottom:20px;position:relative}
+.chart-bar-group{flex:1;display:flex;gap:2px;align-items:flex-end;height:60px;cursor:default}
+.chart-bar{flex:1;border-radius:2px 2px 0 0;transition:height .5s ease;min-height:2px}
+.bar-pres{background:var(--accent);opacity:.7}
+.bar-exit{background:var(--green);opacity:.9}
+.chart-bar-group:hover .chart-bar{opacity:1}
+.chart-labels{display:flex;gap:3px;position:absolute;bottom:0;left:0;right:0}
+.chart-label{flex:1;text-align:center;font-size:8px;color:var(--muted);font-family:var(--font-mono);overflow:hidden}
+.legend{display:flex;gap:14px;margin-top:8px}
+.leg-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted2)}
+.leg-dot{width:8px;height:8px;border-radius:2px}
+
+/* ── RSSI BARS ── */
+.rssi-list{display:flex;flex-direction:column;gap:9px}
+.rssi-row{display:flex;align-items:center;gap:8px}
+.rssi-lbl{font-family:var(--font-mono);font-size:10px;color:var(--muted2);width:88px;flex-shrink:0}
+.rssi-track{flex:1;height:9px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.rssi-fill{height:100%;border-radius:4px;transition:width .6s ease;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+.rssi-cnt{font-family:var(--font-mono);font-size:10px;color:var(--muted2);width:26px;text-align:right}
+
+/* ── GEO ── */
+.geo-rows{display:flex;flex-direction:column;gap:2px}
+.geo-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+.geo-row:last-of-type{border-bottom:none}
+.geo-k{font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+.geo-v{font-family:var(--font-mono);font-size:11px;color:var(--text);font-weight:600}
+.maps-btn{display:none;width:100%;margin-top:10px;padding:9px;background:rgba(0,212,255,.07);border:1px solid var(--accent2);border-radius:8px;color:var(--accent);font-family:var(--font-mono);font-size:11px;font-weight:700;cursor:pointer;text-decoration:none;text-align:center;transition:background .2s}
+.maps-btn:hover{background:rgba(0,212,255,.14)}
+
+/* ── TABLE ── */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:11px}
+thead th{font-family:var(--font-mono);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:5px 9px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:7px 9px;border-bottom:1px solid rgba(26,35,48,.7);vertical-align:middle;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background .15s}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.row-flash{animation:rf .8s ease}
+@keyframes rf{0%{background:rgba(0,212,255,.1)}100%{background:transparent}}
+.empty-row td{text-align:center;color:var(--muted);padding:22px;font-family:var(--font-mono);font-size:11px}
+
+/* ── PILLS ── */
+.pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-size:9px;font-weight:700;font-family:var(--font-mono);letter-spacing:.3px;border:1px solid transparent}
+.pill-pres{background:rgba(0,212,255,.1);color:var(--accent);border-color:rgba(0,212,255,.2)}
+.pill-exit{background:rgba(0,230,118,.1);color:var(--green);border-color:rgba(0,230,118,.2)}
+.pill-hb{background:rgba(187,134,252,.1);color:var(--purple);border-color:rgba(187,134,252,.2)}
+
+/* ── RSSI COLOR ── */
+.rg{color:var(--green)}.ro{color:var(--yellow)}.rw{color:var(--orange)}.rb{color:var(--red)}
+
+/* ── SIG BADGES ── */
+.sig-ble{background:rgba(0,212,255,.1);color:var(--accent);padding:1px 6px;border-radius:3px;font-family:var(--font-mono);font-size:9px;font-weight:700}
+.sig-wifi{background:rgba(0,230,118,.1);color:var(--green);padding:1px 6px;border-radius:3px;font-family:var(--font-mono);font-size:9px;font-weight:700}
+
+/* ── MISC ── */
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--muted2)}
+.dim{color:var(--muted)}
+footer{text-align:center;padding:18px;color:var(--muted);font-family:var(--font-mono);font-size:9px;letter-spacing:.5px;border-top:1px solid var(--border);margin-top:6px}
+
+/* ── SIGNAL SOURCE PIE ── */
+.src-list{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.src-row{display:flex;align-items:center;gap:8px}
+.src-name{font-family:var(--font-mono);font-size:10px;color:var(--muted2);width:60px;flex-shrink:0}
+.src-bar-wrap{flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.src-bar{height:100%;border-radius:4px;transition:width .6s ease}
+.src-cnt{font-family:var(--font-mono);font-size:10px;color:var(--muted2);width:32px;text-align:right}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-icon">📡</div>
+  <div>
+    <div class="logo-title">FOOTFALL PILOT v9</div>
+    <div class="logo-sub">7SEMI ESP32-S3 · EC200U · BLE · GNSS · LTE</div>
+  </div>
+  <div class="header-right">
+    <span id="conn-pill" class="conn-pill conn-wait">
+      <span class="dot"></span><span id="conn-text">Connecting…</span>
+    </span>
+    <span id="last-update" class="dim">—</span>
+  </div>
+</header>
+
+<main>
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="si"><span class="sdot" id="dot-wifi"></span>WiFi <span class="val" id="sb-wifi">—</span></div>
+    <div class="si"><span class="sdot" id="dot-modem"></span>Modem <span class="val" id="sb-modem">—</span></div>
+    <div class="si"><span class="sdot" id="dot-gnss"></span>GNSS <span class="val" id="sb-gnss">—</span></div>
+    <div class="si">⏱ Uptime <span class="val" id="sb-uptime">—</span></div>
+    <div class="si">📦 Queue <span class="val" id="sb-queue">—</span></div>
+    <div class="si">💾 Spool <span class="val" id="sb-spool">—</span></div>
+    <div class="si">⚠️ Failures <span class="val" id="sb-fail">—</span></div>
+    <div class="si">FW <span class="val mono" id="sb-fw">—</span></div>
+    <div class="si">Device <span class="val mono" id="sb-dev">—</span></div>
+  </div>
+
+  <!-- KPI ROW 1 -->
+  <div class="kpi-grid">
+    <div class="kpi" style="--kc:var(--accent)">
+      <div class="kpi-icon">📶</div>
+      <div class="kpi-label">Unique Devices</div>
+      <div class="kpi-val" id="k-unique">—</div>
+      <div class="kpi-sub">Distinct MAC hashes · 24h</div>
+    </div>
+    <div class="kpi" style="--kc:var(--green)">
+      <div class="kpi-icon">🟢</div>
+      <div class="kpi-label">Active Now</div>
+      <div class="kpi-val" id="k-active">—</div>
+      <div class="kpi-sub">Seen in last 30s</div>
+    </div>
+    <div class="kpi" style="--kc:var(--yellow)">
+      <div class="kpi-icon">⏱</div>
+      <div class="kpi-label">Qualified Exposure</div>
+      <div class="kpi-val" id="k-qual">—</div>
+      <div class="kpi-sub">Dwell ≥ 10s · 24h</div>
+    </div>
+    <div class="kpi" style="--kc:var(--purple)">
+      <div class="kpi-icon">📊</div>
+      <div class="kpi-label">Avg Dwell</div>
+      <div class="kpi-val" id="k-dwell">—</div>
+      <div class="kpi-sub">Exposure exits · 24h</div>
+    </div>
+  </div>
+
+  <!-- KPI ROW 2 -->
+  <div class="kpi-grid" style="margin-bottom:18px">
+    <div class="kpi" style="--kc:var(--accent2)">
+      <div class="kpi-icon">👁</div>
+      <div class="kpi-label">Presence Events</div>
+      <div class="kpi-val" id="k-pres">—</div>
+      <div class="kpi-sub">24h total</div>
+    </div>
+    <div class="kpi" style="--kc:var(--green2)">
+      <div class="kpi-icon">🚶</div>
+      <div class="kpi-label">Exposure Exits</div>
+      <div class="kpi-val" id="k-exits">—</div>
+      <div class="kpi-sub">24h total</div>
+    </div>
+    <div class="kpi" style="--kc:var(--orange)">
+      <div class="kpi-icon">📡</div>
+      <div class="kpi-label">Avg RSSI</div>
+      <div class="kpi-val" id="k-rssi">—</div>
+      <div class="kpi-sub">Active devices dBm</div>
+    </div>
+    <div class="kpi" style="--kc:var(--muted2)">
+      <div class="kpi-icon">📥</div>
+      <div class="kpi-label">Total Ingested</div>
+      <div class="kpi-val" id="k-total">—</div>
+      <div class="kpi-sub">All time</div>
+    </div>
+  </div>
+
+  <!-- CHARTS ROW -->
+  <div class="row2">
+    <!-- Hourly Chart -->
+    <div class="card">
+      <div class="card-title">Hourly Activity — last 12h</div>
+      <div class="chart-wrap" id="chart-wrap">
+        <div class="chart-labels" id="chart-labels"></div>
+      </div>
+      <div class="legend">
+        <div class="leg-item"><div class="leg-dot" style="background:var(--accent)"></div>Presence</div>
+        <div class="leg-item"><div class="leg-dot" style="background:var(--green)"></div>Exit</div>
+      </div>
+    </div>
+
+    <!-- RSSI Histogram -->
+    <div class="card">
+      <div class="card-title">RSSI Distribution</div>
+      <div class="rssi-list">
+        <div class="rssi-row"><span class="rssi-lbl">-50+ dBm</span><div class="rssi-track"><div class="rssi-fill" id="rh50" style="width:0%"></div></div><span class="rssi-cnt" id="rc50">0</span></div>
+        <div class="rssi-row"><span class="rssi-lbl">-60 to -51</span><div class="rssi-track"><div class="rssi-fill" id="rh60" style="width:0%"></div></div><span class="rssi-cnt" id="rc60">0</span></div>
+        <div class="rssi-row"><span class="rssi-lbl">-70 to -61</span><div class="rssi-track"><div class="rssi-fill" id="rh70" style="width:0%"></div></div><span class="rssi-cnt" id="rc70">0</span></div>
+        <div class="rssi-row"><span class="rssi-lbl">-80 to -71</span><div class="rssi-track"><div class="rssi-fill" id="rh80" style="width:0%"></div></div><span class="rssi-cnt" id="rc80">0</span></div>
+        <div class="rssi-row"><span class="rssi-lbl">-90 to -81</span><div class="rssi-track"><div class="rssi-fill" id="rh90" style="width:0%"></div></div><span class="rssi-cnt" id="rc90">0</span></div>
+      </div>
+
+      <div class="card-title" style="margin-top:18px">Signal Sources</div>
+      <div class="src-list" id="src-list"></div>
+    </div>
+
+    <!-- GPS Card -->
+    <div class="card geo-card">
+      <div class="card-title">GPS / Geofence</div>
+      <div class="geo-rows">
+        <div class="geo-row"><span class="geo-k">Latitude</span><span class="geo-v mono" id="g-lat">—</span></div>
+        <div class="geo-row"><span class="geo-k">Longitude</span><span class="geo-v mono" id="g-lon">—</span></div>
+        <div class="geo-row"><span class="geo-k">Avg Dwell</span><span class="geo-v mono" id="g-dwell">—</span></div>
+        <div class="geo-row"><span class="geo-k">GPS Events</span><span class="geo-v mono" id="g-count">—</span></div>
+      </div>
+      <a id="maps-btn" class="maps-btn" href="#" target="_blank">📍 Open in Google Maps</a>
+    </div>
+  </div>
+
+  <!-- DEVICES + EVENTS -->
+  <div class="row3">
+    <!-- Device Heartbeats -->
+    <div class="card">
+      <div class="card-title">Device Heartbeats</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Device</th><th>GPS</th><th>Modem</th><th>WiFi</th><th>Up</th><th>Last</th>
+          </tr></thead>
+          <tbody id="dev-tbody">
+            <tr class="empty-row"><td colspan="6">Waiting for heartbeat…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Live Events -->
+    <div class="card">
+      <div class="card-title">Live Event Feed <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">(last 100)</span></div>
+      <div class="tbl-wrap" style="max-height:340px;overflow-y:auto">
+        <table>
+          <thead><tr>
+            <th>Time</th><th>Type</th><th>Signal</th><th>RSSI</th><th>Dwell</th><th>GPS</th><th>MAC</th><th>Site</th>
+          </tr></thead>
+          <tbody id="events-tbody">
+            <tr class="empty-row"><td colspan="8">Waiting for events…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  FOOTFALL PILOT v9 · 7SEMI ESP32-S3 EC200U · BLE + GNSS + WiFi → Railway Backend · Socket.IO Live + REST Poll
+</footer>
+
+<script>
+// ── SOCKET.IO ──────────────────────────────────────────────────────
+const socket = io();
+socket.on("connect",    () => setConn("live"));
+socket.on("disconnect", () => setConn("dead"));
+socket.on("snapshot", d => {
+  if (d.events?.length) d.events.slice(-100).forEach(e => prependEvent(e, false));
+  if (d.heartbeats)     d.heartbeats.forEach(hb => { updateDevice(hb); updateStatusBar(hb); });
+});
+socket.on("event",     ev => prependEvent(ev, true));
+socket.on("heartbeat", hb => { updateDevice(hb); updateStatusBar(hb); });
+
+function setConn(s) {
+  const pill = document.getElementById("conn-pill");
+  const txt  = document.getElementById("conn-text");
+  pill.className = "conn-pill conn-" + s;
+  txt.textContent = s==="live"?"LIVE":s==="dead"?"Disconnected":"Connecting…";
+}
+
+// ── HELPERS ────────────────────────────────────────────────────────
+const fmtTime = ts => ts ? new Date(ts).toLocaleTimeString("en-IN",{hour12:false}) : "—";
+const fmtUptime = sec => {
+  if (!sec) return "—";
+  const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
+  return h>0?`${h}h${m}m`:m>0?`${m}m${s}s`:`${s}s`;
+};
+const rssiCls = v => {
+  if (!v) return "";
+  const r=Number(v);
+  return r>-60?"rg":r>-70?"":r>-80?"ro":r>-90?"rw":"rb";
+};
+const typePill = t => {
+  if (t==="presence")      return "pill pill-pres";
+  if (t==="exposure_exit") return "pill pill-exit";
+  return "pill pill-hb";
+};
+const sigBadge = s => {
+  if (!s) return "—";
+  const c = s.includes("ble")?"sig-ble":"sig-wifi";
+  return `<span class="${c}">${s}</span>`;
+};
+
+function setVal(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val ?? "—";
+}
+function setKpi(id, val, unit="") {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const nv = val!=null ? String(val)+unit : "—";
+  if (el.textContent !== nv) {
+    el.textContent = nv;
+    el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
+  }
+}
+function setDot(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.className = "sdot " + (on?"on":"off");
+}
+
+// ── STATUS BAR ─────────────────────────────────────────────────────
+function updateStatusBar(hb) {
+  const isOn = v => v===true||v==="true"||v===1;
+  setDot("dot-wifi",  isOn(hb.wifi_rssi));
+  setDot("dot-modem", isOn(hb.modem_ready));
+  setDot("dot-gnss",  isOn(hb.gnss_ready));
+  setVal("sb-wifi",   hb.wifi_rssi ? hb.wifi_rssi+"dBm" : "—");
+  setVal("sb-modem",  isOn(hb.modem_ready)?"OK":"FAIL");
+  setVal("sb-gnss",   isOn(hb.gnss_ready)?"OK":"FAIL");
+  setVal("sb-uptime", fmtUptime(hb.uptime_sec));
+  setVal("sb-queue",  hb.queue_depth ?? "—");
+  setVal("sb-spool",  hb.spool_bytes!=null ? hb.spool_bytes+"B" : "—");
+  setVal("sb-fail",   hb.upload_failures ?? "—");
+  setVal("sb-fw",     hb.fw_version || "—");
+  setVal("sb-dev",    hb.device_id  || "—");
+}
+
+// ── DEVICE ROW ─────────────────────────────────────────────────────
+function updateDevice(hb) {
+  const tb = document.getElementById("dev-tbody");
+  clearEmpty(tb);
+  const id = hb.device_id || "unknown";
+  let row = document.getElementById("dev-"+id);
+  if (!row) { row=document.createElement("tr"); row.id="dev-"+id; tb.prepend(row); }
+  const gps   = hb.gps_fix ? "✅":"❌";
+  const modem = hb.modem_ready?"✅":"❌";
+  const wifi  = hb.wifi_rssi?`<span class="${rssiCls(hb.wifi_rssi)} mono">${hb.wifi_rssi}</span>`:"—";
+  row.innerHTML=`
+    <td class="mono" style="color:var(--accent)">${id}</td>
+    <td>${gps}</td>
+    <td>${modem}</td>
+    <td>${wifi}</td>
+    <td class="mono dim">${fmtUptime(hb.uptime_sec)}</td>
+    <td class="mono dim">${fmtTime(hb._received_at)}</td>`;
+  row.className="row-flash";
+}
+
+// ── EVENT ROW ──────────────────────────────────────────────────────
+function prependEvent(ev, animate) {
+  const tb = document.getElementById("events-tbody");
+  clearEmpty(tb);
+  const tr = document.createElement("tr");
+  if (animate) tr.className="row-flash";
+  const gps = ev.gps_fix
+    ? `<span style="color:var(--green);font-size:10px">✅${Number(ev.lat).toFixed(4)}</span>`
+    : `<span class="dim">—</span>`;
+  tr.innerHTML=`
+    <td class="mono dim">${fmtTime(ev._received_at||ev.timestamp_utc)}</td>
+    <td><span class="${typePill(ev.event_type)}">${ev.event_type}</span></td>
+    <td>${sigBadge(ev.signal_source)}</td>
+    <td class="${rssiCls(ev.rssi)} mono">${ev.rssi||"—"}</td>
+    <td class="mono">${ev.dwell_time_sec>0?ev.dwell_time_sec+"s":"—"}</td>
+    <td>${gps}</td>
+    <td class="mono dim" style="font-size:10px">${ev.mac_hash?ev.mac_hash.slice(0,12)+"…":"—"}</td>
+    <td class="mono dim">${ev.site_id||"—"}</td>`;
+  tb.prepend(tr);
+  while (tb.rows.length > 100) tb.deleteRow(tb.rows.length-1);
+}
+
+function clearEmpty(tb) {
+  if (tb.rows.length===1 && tb.rows[0].classList.contains("empty-row")) tb.innerHTML="";
+}
+
+// ── HOURLY CHART ───────────────────────────────────────────────────
+function renderChart(buckets) {
+  const wrap   = document.getElementById("chart-wrap");
+  const labels = document.getElementById("chart-labels");
+  const keys   = Object.keys(buckets);
+  const maxVal = Math.max(1, ...keys.map(k=>buckets[k].presence+buckets[k].exits));
+
+  [...wrap.querySelectorAll(".chart-bar-group")].forEach(el=>el.remove());
+
+  keys.forEach(k => {
+    const g=document.createElement("div"); g.className="chart-bar-group";
+    g.title=`${k}: ${buckets[k].presence} presence, ${buckets[k].exits} exits`;
+    const bP=document.createElement("div"); bP.className="chart-bar bar-pres";
+    bP.style.height=Math.max(2,(buckets[k].presence/maxVal)*60)+"px";
+    const bE=document.createElement("div"); bE.className="chart-bar bar-exit";
+    bE.style.height=Math.max(2,(buckets[k].exits/maxVal)*60)+"px";
+    g.append(bP,bE); wrap.insertBefore(g,labels);
+  });
+
+  labels.innerHTML=keys.map(k=>`<div class="chart-label">${k.split(":")[0]}</div>`).join("");
+}
+
+// ── RSSI HISTOGRAM ─────────────────────────────────────────────────
+function renderRssi(hist) {
+  const max=Math.max(1,...Object.values(hist));
+  const m={"-50+":["rh50","rc50"],"-60 to -51":["rh60","rc60"],"-70 to -61":["rh70","rc70"],"-80 to -71":["rh80","rc80"],"-90 to -81":["rh90","rc90"]};
+  for (const [k,[fid,cid]] of Object.entries(m)) {
+    const v=hist[k]||0;
+    const f=document.getElementById(fid); if(f)f.style.width=Math.max(2,(v/max)*100)+"%";
+    const c=document.getElementById(cid); if(c)c.textContent=v;
+  }
+}
+
+// ── SIGNAL SOURCES ─────────────────────────────────────────────────
+const srcColors=["var(--accent)","var(--green)","var(--purple)","var(--yellow)","var(--orange)"];
+function renderSources(sources) {
+  const el=document.getElementById("src-list");
+  if (!el||!sources) return;
+  const keys=Object.keys(sources);
+  if (!keys.length){el.innerHTML='<div class="dim" style="font-size:10px;font-family:var(--font-mono)">No data yet</div>';return;}
+  const max=Math.max(...keys.map(k=>sources[k]));
+  el.innerHTML=keys.map((k,i)=>`
+    <div class="src-row">
+      <span class="src-name">${k}</span>
+      <div class="src-bar-wrap"><div class="src-bar" style="width:${Math.max(2,(sources[k]/max)*100)}%;background:${srcColors[i%srcColors.length]}"></div></div>
+      <span class="src-cnt">${sources[k]}</span>
+    </div>`).join("");
+}
+
+// ── POLL ───────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const r=await fetch("/api/dashboard"); if(!r.ok)return;
+    const d=await r.json();
+
+    setKpi("k-unique", d.unique_devices);
+    setKpi("k-active", d.active_devices);
+    setKpi("k-qual",   d.qualified_24h);
+    setKpi("k-dwell",  d.geofence?.avg_dwell!=null?d.geofence.avg_dwell+"s":null);
+    setKpi("k-pres",   d.presence_24h);
+    setKpi("k-exits",  d.exits_24h);
+    setKpi("k-rssi",   d.avg_rssi!=null?d.avg_rssi+" dBm":null);
+    setKpi("k-total",  d.stats?.total_ingested);
+
+    // GPS
+    if (d.geofence?.lat) {
+      setVal("g-lat",   d.geofence.lat);
+      setVal("g-lon",   d.geofence.lon);
+      setVal("g-dwell", d.geofence.avg_dwell!=null?d.geofence.avg_dwell+"s":"—");
+      setVal("g-count", d.geofence.fix_count);
+      const btn=document.getElementById("maps-btn");
+      btn.href=`https://maps.google.com/?q=${d.geofence.lat},${d.geofence.lon}`;
+      btn.style.display="block";
+    }
+
+    // Charts
+    if (d.hourly_buckets) renderChart(d.hourly_buckets);
+    if (d.rssi_histogram)  renderRssi(d.rssi_histogram);
+    if (d.signal_sources)  renderSources(d.signal_sources);
+
+    // Heartbeats
+    if (d.heartbeats?.length) {
+      const latest=d.heartbeats.sort((a,b)=>Date.parse(b._received_at)-Date.parse(a._received_at))[0];
+      updateStatusBar(latest);
+      d.heartbeats.forEach(hb=>updateDevice(hb));
+    }
+
+    // Initial events load
+    const evTb=document.getElementById("events-tbody");
+    if (evTb.rows.length<=1 && d.recent_events?.length) {
+      evTb.innerHTML="";
+      d.recent_events.forEach(e=>prependEvent(e,false));
+    }
+
+    document.getElementById("last-update").textContent=
+      "↻ "+new Date().toLocaleTimeString("en-IN",{hour12:false});
+
+  } catch(e) { console.error("[POLL]",e); }
+}
+
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>
